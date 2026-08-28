@@ -839,11 +839,29 @@ select {
 /* ------------------------------------------------------------------ *
  * Listbox - the themed replacement for <select> in the header/settings
  * ------------------------------------------------------------------ */
+/*
+  Fully opaque, on purpose.
+
+  This popup floats over the transcript, so any transparency at all leaves
+  message text crawling underneath the options - and a translucent panel over
+  a busy background is exactly the readability problem the native <select> had.
+  Its own solid colour, one step lifted from the page so the panel reads as
+  floating rather than as a hole cut in the layout. No backdrop-filter either:
+  with nothing showing through there is nothing to blur, and it was forcing a
+  compositor layer for no visual gain.
+*/
+:root {
+  --pop: 255 255 255;
+}
+.dark {
+  --pop: 24 24 32;
+}
 .listbox-pop {
-  background: rgb(var(--canvas) / 0.97);
-  backdrop-filter: blur(20px) saturate(140%);
-  border: 1px solid rgb(var(--tint) / 0.12);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2), 0 24px 60px -20px rgb(0 0 0 / 0.65);
+  background: rgb(var(--pop));
+  border: 1px solid rgb(var(--tint) / 0.14);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.18),
+    0 24px 60px -20px rgb(0 0 0 / 0.55);
 }
 .listbox-option[data-active="true"] {
   background: rgb(var(--accent-rgb) / 0.16);
