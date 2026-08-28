@@ -70,6 +70,16 @@ export function VisualPanel({
     artifacts[artifacts.length - 1] ||
     null;
 
+  /*
+    Building the sandbox document is string work over the whole artifact. Left
+    inline it ran on every render of the panel - including every frame of a
+    streaming reply - and handed the iframe a fresh srcDoc each time.
+  */
+  const previewDoc = useMemo(
+    () => (current ? artifactDocument(current, dark, accent) : ""),
+    [current, dark, accent]
+  );
+
   // Auto-switch: show code while generating, flip to Preview when it finishes.
   const prevBusy = useRef(busy);
   useEffect(() => {
@@ -366,7 +376,7 @@ export function VisualPanel({
                     exit={{ opacity: 0 }}
                     title={`Preview: ${current.title || current.kind}`}
                     sandbox="allow-scripts"
-                    srcDoc={artifactDocument(current, dark, accent)}
+                    srcDoc={previewDoc}
                     className="min-h-0 w-full flex-1 border-0"
                     style={{ background: dark ? "#0b0b0f" : "#ffffff" }}
                   />
@@ -560,8 +570,16 @@ function MetricsView({
 
 function CodeView({ artifact }: { artifact: Artifact }) {
   const [copied, setCopied] = useState(false);
-  const lines = artifact.source.split("\n").length;
-  const html = highlightCode(artifact.source, artifact.lang);
+  const lines = useMemo(
+    () => artifact.source.split("\n").length,
+    [artifact.source]
+  );
+  // tokenising is a full pass over the source - not something to redo
+  // because the copy button changed its label
+  const html = useMemo(
+    () => highlightCode(artifact.source, artifact.lang),
+    [artifact.source, artifact.lang]
+  );
 
   const copy = async () => {
     if (!(await copyText(artifact.source))) return;

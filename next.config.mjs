@@ -1,6 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  /*
+    There is an unrelated package-lock.json in the parent directory, and Next
+    picks the outermost lockfile it finds as the tracing root. Left alone it
+    traces the whole home folder on every build.
+  */
+  outputFileTracingRoot: import.meta.dirname,
   poweredByHeader: false,
   compress: true,
   productionBrowserSourceMaps: false,

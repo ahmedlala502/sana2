@@ -45,6 +45,8 @@ import type {
   ProviderId,
 } from "@/lib/types";
 
+import { Listbox, type ListboxOption } from "@/components/ui/listbox";
+
 type Tab = "chats" | "skills" | "plugins" | "mcp" | "settings";
 
 export interface SidebarProps {
@@ -69,11 +71,19 @@ export interface SidebarProps {
   rememberKey: boolean;
   setRememberKey: (b: boolean) => void;
   models: string[];
+  /** ready-made rows for the model picker, already filtered and grouped */
+  modelOptions: ListboxOption[];
+  /** how many catalogue entries are non-chat endpoints */
+  hiddenModels: number;
   loadingModels: boolean;
   onLoadModels: () => void;
   connection: { ok: boolean; message: string } | null;
   /** which providers the server itself holds a key for, from /api/health */
   serverKeys: Record<string, boolean>;
+  /** which providers the browser holds a key for - one per provider */
+  providerKeys: Record<ProviderId, string>;
+  /** endpoint reverts to the provider default */
+  onResetEndpoint: () => void;
 
   params: GenParams;
   setParams: (p: GenParams) => void;
@@ -706,6 +716,18 @@ export function Sidebar(p: SidebarProps) {
                             className="ml-auto h-3 w-3 flex-none text-emerald-400"
                             aria-label="Key set on the server"
                           />
+                        ) : p.providerKeys[id] ? (
+                          <span
+                            className="ml-auto h-1.5 w-1.5 flex-none rounded-full bg-accentc"
+                            title="Key saved in this browser"
+                            aria-label="Key saved in this browser"
+                          />
+                        ) : s.needsKey ? (
+                          <span
+                            className="ml-auto h-1.5 w-1.5 flex-none rounded-full bg-amber-400/70"
+                            title="No key yet"
+                            aria-label="No key yet"
+                          />
                         ) : null}
                       </div>
                     </button>
@@ -726,9 +748,20 @@ export function Sidebar(p: SidebarProps) {
                 inputMode="url"
                 className="field font-mono text-[11.5px]"
               />
-              <p className="mt-1.5 text-[10.5px] leading-relaxed text-white/30">
-                Saved separately for {spec.label}. Switching providers restores its endpoint.
-              </p>
+              <div className="mt-1.5 flex items-start justify-between gap-2">
+                <p className="text-[10.5px] leading-relaxed text-white/30">
+                  Saved separately for {spec.label}, along with its key and model.
+                  Switching providers restores all three.
+                </p>
+                {spec.baseUrl && p.baseUrl !== spec.baseUrl ? (
+                  <button
+                    onClick={p.onResetEndpoint}
+                    className="flex-none text-[10.5px] text-white/40 underline-offset-2 hover:text-white/75 hover:underline"
+                  >
+                    Reset
+                  </button>
+                ) : null}
+              </div>
             </Section>
 
             {spec.needsKey || p.provider === "custom" ? (
@@ -766,10 +799,14 @@ export function Sidebar(p: SidebarProps) {
                     )}
                   </button>
                 </div>
+                <p className="mt-1.5 text-[10.5px] leading-relaxed text-white/30">
+                  This key belongs to {spec.label} alone. Each provider keeps its
+                  own, so switching never sends one provider&rsquo;s key to another.
+                </p>
                 <Check2
                   checked={p.rememberKey}
                   onChange={p.setRememberKey}
-                  label="Remember on this device"
+                  label="Remember keys on this device"
                 />
                 {p.rememberKey ? (
                   <p className="mt-1 text-[11px] leading-relaxed text-amber-300/70">
@@ -781,21 +818,45 @@ export function Sidebar(p: SidebarProps) {
             ) : null}
 
             <Section title="Model">
-              <input
+              {/*
+                A <datalist> only previews as an OS-drawn dropdown that ignores
+                the page's colours, and it cannot show a model's owner or
+                context window. This is the same picker as the header.
+              */}
+              <Listbox
+                className="w-full"
+                buttonClassName="field font-mono"
+                label="Model"
                 value={p.model}
-                onChange={(e) => p.setModel(e.target.value)}
-                list="model-hints"
-                aria-label="Model ID"
-                spellCheck={false}
-                className="field font-mono text-[11.5px]"
+                options={p.modelOptions}
+                onChange={p.setModel}
+                placeholder="Load the model list"
+                searchable
+                footer={
+                  p.hiddenModels ? (
+                    <button
+                      onClick={() =>
+                        p.setPrefs({ ...p.prefs, showAllModels: !p.prefs.showAllModels })
+                      }
+                      className="w-full text-left text-[10.5px] text-white/40 hover:text-white/70"
+                    >
+                      {p.prefs.showAllModels
+                        ? `Hide ${p.hiddenModels} non-chat endpoints`
+                        : `Show ${p.hiddenModels} hidden non-chat endpoints`}
+                    </button>
+                  ) : null
+                }
               />
-              <datalist id="model-hints">
-                {(p.models.length ? p.models : MODEL_HINTS[p.provider] || []).map(
-                  (m) => (
-                    <option key={m} value={m} />
-                  )
-                )}
-              </datalist>
+              {p.provider === "custom" ? (
+                <input
+                  value={p.model}
+                  onChange={(e) => p.setModel(e.target.value)}
+                  aria-label="Model ID"
+                  placeholder="or type a model id"
+                  spellCheck={false}
+                  className="field mt-1.5 font-mono text-[11.5px]"
+                />
+              ) : null}
               <button
                 onClick={p.onLoadModels}
                 disabled={p.loadingModels}
@@ -807,7 +868,7 @@ export function Sidebar(p: SidebarProps) {
                   <RefreshCw className="h-3 w-3" />
                 )}
                 {p.models.length
-                  ? `${p.models.length} models loaded`
+                  ? `${p.models.length} chat models loaded`
                   : "Load model list"}
               </button>
               {p.connection ? (

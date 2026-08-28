@@ -142,6 +142,12 @@ export interface Prefs {
   railWidth: number;
   /** left rail collapsed to an icon strip */
   railCollapsed: boolean;
+  /*
+    Show every model the provider lists, including the embedding, reranking,
+    OCR and speech endpoints that cannot answer a chat completion. Off by
+    default - those entries only ever produce a 404 when you pick one.
+  */
+  showAllModels: boolean;
 }
 
 export interface Toast {
@@ -150,6 +156,17 @@ export interface Toast {
   message: string;
   /** optional inline action, e.g. "Open settings" */
   action?: { label: string; run: () => void };
+}
+
+/** One catalogue entry from /api/models, with whatever detail the provider gave. */
+export interface ModelInfo {
+  id: string;
+  /** who publishes it, when the provider says */
+  owned?: string;
+  /** context window, when the provider reports one */
+  context?: number;
+  /** false for embedding/rerank/OCR/speech endpoints - not chat-capable */
+  chat: boolean;
 }
 
 export interface HealthReport {

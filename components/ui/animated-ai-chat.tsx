@@ -70,28 +70,47 @@ export function useAutoResizeTextarea({
 /* ambient background + typing dots                                    */
 /* ------------------------------------------------------------------ */
 
+/*
+  Three soft colour washes behind the app.
+
+  These used to be solid discs run through `blur(128px)` while `animate-pulse`
+  drove their opacity. A filtered layer whose opacity is animating gets
+  re-rasterised every frame, so this cost real GPU time continuously, forever,
+  on a purely decorative element. A radial-gradient IS a blur - painting the
+  falloff directly gets the same picture with no filter and nothing to
+  re-rasterise. The pulse is kept but moved onto its own composited layer.
+*/
 export function AmbientGlow() {
   return (
     <div
       className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden"
-      style={{ opacity: "var(--glow)" }}
+      style={{ opacity: "var(--glow)", contain: "strict" }}
       aria-hidden
     >
       <div
-        className="absolute left-1/4 top-0 h-96 w-96 animate-pulse rounded-full blur-[128px]"
+        className="absolute left-1/4 top-0 h-[40rem] w-[40rem] -translate-x-1/3 -translate-y-1/3 animate-pulse rounded-full"
         style={{
-          background: "radial-gradient(circle, var(--pi-accent), transparent 70%)",
-          opacity: 0.14,
+          background:
+            "radial-gradient(circle, rgb(139 92 246 / 0.16), rgb(139 92 246 / 0.06) 38%, transparent 68%)",
+          willChange: "opacity",
         }}
       />
       <div
-        className="absolute bottom-0 right-1/4 h-96 w-96 animate-pulse rounded-full blur-[128px] [animation-delay:700ms]"
+        className="absolute bottom-0 right-1/4 h-[40rem] w-[40rem] translate-x-1/3 translate-y-1/3 animate-pulse rounded-full [animation-delay:700ms]"
         style={{
-          background: "radial-gradient(circle, var(--pi-accent-2), transparent 70%)",
-          opacity: 0.12,
+          background:
+            "radial-gradient(circle, rgb(99 102 241 / 0.14), rgb(99 102 241 / 0.05) 38%, transparent 68%)",
+          willChange: "opacity",
         }}
       />
-      <div className="absolute right-1/3 top-1/4 h-64 w-64 animate-pulse rounded-full bg-fuchsia-500/10 blur-[96px] [animation-delay:1000ms]" />
+      <div
+        className="absolute right-1/3 top-1/4 h-[26rem] w-[26rem] animate-pulse rounded-full [animation-delay:1000ms]"
+        style={{
+          background:
+            "radial-gradient(circle, rgb(217 70 239 / 0.10), transparent 65%)",
+          willChange: "opacity",
+        }}
+      />
     </div>
   );
 }
@@ -604,15 +623,30 @@ export function ChatHero({
 /* thinking pill                                                       */
 /* ------------------------------------------------------------------ */
 
+/*
+  Takes the moment work started, not a running total. The elapsed counter used
+  to live in the page, where a 250ms interval re-rendered the entire
+  conversation four times a second for the sake of one label. Keeping the tick
+  local means only this pill repaints.
+*/
 export function ThinkingPill({
   label = "agent",
   phase,
-  elapsed,
+  startedAt,
 }: {
   label?: string;
   phase?: string;
-  elapsed?: number;
+  startedAt?: number;
 }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!startedAt) return;
+    const tick = () => setElapsed(Date.now() - startedAt);
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
+
   return (
     <motion.div
       className="pointer-events-none fixed bottom-[7.5rem] left-1/2 z-40 -translate-x-1/2 rounded-full border border-white/[0.07] bg-black/70 px-3.5 py-1.5 shadow-lift backdrop-blur-2xl"
@@ -625,7 +659,11 @@ export function ThinkingPill({
       <div className="flex items-center gap-2.5">
         <LoaderIcon className="h-3.5 w-3.5 animate-[spin_1.6s_linear_infinite] text-accentc" />
         <span className="text-[12.5px] text-white/75">
-          {phase === "tools" ? "Running tools" : "Thinking"}
+          {phase === "tools"
+            ? "Running tools"
+            : phase === "continuing"
+              ? "Continuing the reply"
+              : "Thinking"}
         </span>
         {elapsed ? (
           <span className="font-mono text-[11px] text-white/35">

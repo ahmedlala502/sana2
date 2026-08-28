@@ -48,12 +48,14 @@ import {
   ActionButton,
   type CommandSuggestion,
 } from "@/components/ui/animated-ai-chat";
-import { CommandPalette, type Command } from "@/components/ui/command-palette";
+import dynamic from "next/dynamic";
+import type { Command } from "@/components/ui/command-palette";
 import { ToastStack } from "@/components/ui/toast";
 import { ChatMessage } from "@/components/chat-message";
 import { Sidebar, RAIL_DEFAULT } from "@/components/sidebar";
-import { VisualPanel } from "@/components/visual-panel";
+
 import { PROVIDERS, PROVIDER_ORDER, MODEL_HINTS } from "@/lib/providers";
+import { Listbox, type ListboxOption } from "@/components/ui/listbox";
 import { PLUGINS, SKILLS, commandSkills, systemFragments } from "@/lib/registry";
 import { extractArtifacts } from "@/lib/markdown";
 import {
@@ -80,11 +82,35 @@ import type {
   GenParams,
   McpServer,
   Message,
+  ModelInfo,
   Prefs,
   ProviderId,
   Toast,
   ToolTrace,
 } from "@/lib/types";
+
+/** Everything we know about one provider's catalogue, cached per provider. */
+interface Catalogue {
+  models: string[];
+  detail: ModelInfo[];
+  /** how many entries were filtered out as non-chat endpoints */
+  hidden: number;
+}
+
+/*
+  Neither of these is on screen at first paint - the canvas is closed on mobile
+  and the palette needs a keystroke - and between them they carry the artifact
+  renderer and the command index. Splitting them out keeps that weight off the
+  initial bundle.
+*/
+const VisualPanel = dynamic(
+  () => import("@/components/visual-panel").then((m) => m.VisualPanel),
+  { ssr: false }
+);
+const CommandPalette = dynamic(
+  () => import("@/components/ui/command-palette").then((m) => m.CommandPalette),
+  { ssr: false }
+);
 
 const ICONS: Record<string, typeof Sparkles> = {
   ListChecks,
@@ -121,6 +147,20 @@ const DEFAULT_PROVIDER_ENDPOINTS = Object.fromEntries(
   PROVIDER_ORDER.map((id) => [id, PROVIDERS[id].baseUrl])
 ) as Record<ProviderId, string>;
 
+/*
+  Keys and models are per provider, like endpoints already were. Sharing one
+  key field across providers meant switching from NVIDIA to Zen carried the
+  NVIDIA key with it and authentication failed for reasons the UI never
+  explained.
+*/
+const DEFAULT_PROVIDER_KEYS = Object.fromEntries(
+  PROVIDER_ORDER.map((id) => [id, ""])
+) as Record<ProviderId, string>;
+
+const DEFAULT_PROVIDER_MODELS = Object.fromEntries(
+  PROVIDER_ORDER.map((id) => [id, PROVIDERS[id].defaultModel])
+) as Record<ProviderId, string>;
+
 const DEFAULT_PARAMS: GenParams = {
   temperature: 1,
   topP: 0.95,
@@ -142,6 +182,7 @@ const DEFAULT_PREFS: Prefs = {
   panelWidth: 440,
   railWidth: RAIL_DEFAULT,
   railCollapsed: false,
+  showAllModels: false,
 };
 
 /** Tailwind's lg breakpoint, in a hook. Drives drawer-vs-rail layout. */
@@ -169,11 +210,15 @@ export default function Page() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [provider, setProvider] = useState<ProviderId>("nvidia");
-  const [model, setModel] = useState(PROVIDERS.nvidia.defaultModel);
+  const [providerModels, setProviderModels] = useState<Record<ProviderId, string>>(
+    DEFAULT_PROVIDER_MODELS
+  );
   const [providerEndpoints, setProviderEndpoints] = useState<
     Record<ProviderId, string>
   >(DEFAULT_PROVIDER_ENDPOINTS);
-  const [apiKey, setApiKey] = useState("");
+  const [providerKeys, setProviderKeys] = useState<Record<ProviderId, string>>(
+    DEFAULT_PROVIDER_KEYS
+  );
   const [rememberKey, setRememberKey] = useState(false);
   const [params, setParams] = useState<GenParams>(DEFAULT_PARAMS);
   const [enabledPlugins, setEnabledPlugins] = useState<string[]>(
@@ -192,13 +237,14 @@ export default function Page() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [models, setModels] = useState<string[]>([]);
+  const [startedAt, setStartedAt] = useState<number | undefined>(undefined);
+  const [catalogues, setCatalogues] = useState<Partial<Record<ProviderId, Catalogue>>>(
+    {}
+  );
   const [loadingModels, setLoadingModels] = useState(false);
-  const [connection, setConnection] = useState<{
-    ok: boolean;
-    message: string;
-  } | null>(null);
+  const [connections, setConnections] = useState<
+    Partial<Record<ProviderId, { ok: boolean; message: string }>>
+  >({});
   const [serverKeys, setServerKeys] = useState<Record<string, boolean>>({});
   const [panelOpen, setPanelOpen] = useState(true);
   const [navOpen, setNavOpen] = useState(false);
@@ -215,6 +261,22 @@ export default function Page() {
   const modelsReq = useRef(0);
   const desktop = useIsDesktop();
   const baseUrl = providerEndpoints[provider] ?? PROVIDERS[provider].baseUrl;
+  const apiKey = providerKeys[provider] ?? "";
+  const model = providerModels[provider] ?? PROVIDERS[provider].defaultModel;
+  const catalogue = catalogues[provider];
+  const models = catalogue?.models ?? [];
+  const modelDetail = catalogue?.detail ?? [];
+  const hiddenModels = catalogue?.hidden ?? 0;
+  const connection = connections[provider] ?? null;
+
+  const setApiKey = useCallback(
+    (key: string) => setProviderKeys((c) => ({ ...c, [provider]: key })),
+    [provider]
+  );
+  const setModel = useCallback(
+    (id: string) => setProviderModels((c) => ({ ...c, [provider]: id })),
+    [provider]
+  );
 
   /* ---------------- composer drafts, per conversation ---------------- */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -225,12 +287,14 @@ export default function Page() {
     [provider]
   );
 
+  /*
+    Switching is now just a pointer move: the endpoint, key, model, catalogue
+    and connection status for each provider are all held separately, so coming
+    back to one restores exactly what you left it set to.
+  */
   const switchProvider = useCallback((id: ProviderId) => {
     modelsReq.current++; // invalidate any in-flight loadModels for the old provider
     setProvider(id);
-    setModel(PROVIDERS[id].defaultModel);
-    setModels([]);
-    setConnection(null);
   }, []);
 
   /* the mobile panel-close effect lives with the layout section below */
@@ -261,7 +325,14 @@ export default function Page() {
     if (cfg) {
       const restoredProvider = (cfg.provider ?? "nvidia") as ProviderId;
       setProvider(restoredProvider);
-      setModel(cfg.model ?? PROVIDERS[restoredProvider].defaultModel);
+      setProviderModels({
+        ...DEFAULT_PROVIDER_MODELS,
+        ...(cfg.providerModels || {}),
+        // migrate the former single model field onto the provider that owned it
+        ...(typeof cfg.model === "string" && cfg.model
+          ? { [restoredProvider]: cfg.model }
+          : {}),
+      });
       setProviderEndpoints({
         ...DEFAULT_PROVIDER_ENDPOINTS,
         ...(cfg.providerEndpoints || {}),
@@ -283,7 +354,21 @@ export default function Page() {
         cfg.enabledSkills ?? ["ops-voice", "visual-out", "tool-use"]
       );
       setRememberKey(!!cfg.rememberKey);
-      if (cfg.rememberKey) setApiKey(store.get<string>("key", ""));
+      if (cfg.rememberKey) {
+        const saved = store.get<unknown>("keys", null);
+        if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+          setProviderKeys({
+            ...DEFAULT_PROVIDER_KEYS,
+            ...(saved as Record<string, string>),
+          });
+        } else {
+          // pre-migration installs stored one key for whichever provider was
+          // selected at the time - move it there rather than dropping it
+          const legacy = store.get<string>("key", "");
+          if (legacy)
+            setProviderKeys({ ...DEFAULT_PROVIDER_KEYS, [restoredProvider]: legacy });
+        }
+      }
     }
     setMcpServers(store.get<McpServer[]>("mcp", []));
     setDrafts(store.get<Record<string, string>>("drafts", {}));
@@ -311,9 +396,20 @@ export default function Page() {
     limit was simply lost on reload - now it says so, once.
   */
   const quotaWarned = useRef(false);
-  useEffect(() => {
-    if (!ready) return;
-    if (!store.trySet("chats", conversations) && !quotaWarned.current) {
+  /*
+    Serialising the whole transcript on every change was the single most
+    expensive thing the app did while streaming: `conversations` is a new
+    object on each flush, so a long chat with inlined images was being
+    JSON.stringify-ed into localStorage several times a second, on the main
+    thread. Trailing debounce, plus a synchronous flush on pagehide so nothing
+    is lost when the tab closes.
+  */
+  const pendingChats = useRef<Conversation[] | null>(null);
+  const writeChats = useCallback(() => {
+    const value = pendingChats.current;
+    if (!value) return;
+    pendingChats.current = null;
+    if (!store.trySet("chats", value) && !quotaWarned.current) {
       quotaWarned.current = true;
       toast(
         "error",
@@ -321,33 +417,55 @@ export default function Page() {
         { label: "Export everything", run: () => exportAll() }
       );
     }
-  }, [conversations, ready, toast]);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!ready) return;
+    pendingChats.current = conversations;
+    const t = setTimeout(writeChats, 600);
+    return () => clearTimeout(t);
+  }, [conversations, ready, writeChats]);
+
+  useEffect(() => {
+    const flush = () => writeChats();
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
+      flush();
+    };
+  }, [writeChats]);
 
   useEffect(() => {
     if (!ready) return;
     store.trySet("cfg", {
       provider,
-      model,
+      providerModels,
       providerEndpoints,
-      // Retained for backward-compatible backups; new builds read the map.
+      // Retained for backward-compatible backups; new builds read the maps.
+      model,
       baseUrl,
       params,
       enabledPlugins,
       enabledSkills,
       rememberKey,
     });
-    store.trySet("key", rememberKey ? apiKey : "");
+    // one entry per provider, and nothing at all when the box is unticked
+    store.trySet("keys", rememberKey ? providerKeys : {});
+    store.trySet("key", "");
   }, [
     ready,
     provider,
     model,
+    providerModels,
     providerEndpoints,
     baseUrl,
     params,
     enabledPlugins,
     enabledSkills,
     rememberKey,
-    apiKey,
+    providerKeys,
   ]);
 
   useEffect(() => {
@@ -405,13 +523,33 @@ export default function Page() {
   );
   const messages = conversation?.messages ?? [];
 
-  const artifacts: Artifact[] = useMemo(
-    () =>
-      messages
-        .filter((m) => m.role === "assistant" && m.content)
-        .flatMap((m) => extractArtifacts(m.id, m.content)),
-    [messages]
-  );
+  /*
+    extractArtifacts scans a whole reply with several regexes. Re-running it
+    over every message on every streamed frame was pure waste - only the last
+    message is changing. Cached on (message id, exact text), so a settled turn
+    is scanned once and never again.
+  */
+  const artifactCache = useRef(new Map<string, { text: string; out: Artifact[] }>());
+  const artifacts: Artifact[] = useMemo(() => {
+    const cache = artifactCache.current;
+    const live = new Set<string>();
+    const out: Artifact[] = [];
+    for (const m of messages) {
+      if (m.role !== "assistant" || !m.content) continue;
+      live.add(m.id);
+      const hit = cache.get(m.id);
+      if (hit && hit.text === m.content) {
+        out.push(...hit.out);
+        continue;
+      }
+      const found = extractArtifacts(m.id, m.content);
+      cache.set(m.id, { text: m.content, out: found });
+      out.push(...found);
+    }
+    // drop entries for deleted or truncated-away messages
+    for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
+    return out;
+  }, [messages]);
 
   const suggestions: CommandSuggestion[] = useMemo(
     () =>
@@ -467,15 +605,12 @@ export default function Page() {
     return () => el.removeEventListener("scroll", onScroll);
   }, [currentId]);
 
-  /* live elapsed counter for the thinking pill */
+  /*
+    The pill runs its own clock from this timestamp. Ticking a counter in the
+    page re-rendered the whole transcript four times a second while generating.
+  */
   useEffect(() => {
-    if (!busy) {
-      setElapsed(0);
-      return;
-    }
-    const started = Date.now();
-    const t = setInterval(() => setElapsed(Date.now() - started), 250);
-    return () => clearInterval(t);
+    setStartedAt(busy ? Date.now() : undefined);
   }, [busy]);
 
   /* ---------------- conversation helpers ---------------- */
@@ -552,34 +687,54 @@ export default function Page() {
   /* ---------------- provider calls ---------------- */
   const loadModels = useCallback(async () => {
     const req = ++modelsReq.current;
+    const forProvider = provider;
     setLoadingModels(true);
-    setConnection(null);
+    setConnections((c) => ({ ...c, [forProvider]: undefined }));
     try {
       const r = await fetch("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, baseUrl, apiKey }),
+        body: JSON.stringify({ provider: forProvider, baseUrl, apiKey }),
       });
       const j = await r.json();
       // the user switched providers while this was in flight - drop the result
       if (req !== modelsReq.current) return;
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      setModels(j.models || []);
-      const msg = `Connected - ${j.models?.length ?? 0} models reachable${
-        j.ms ? ` in ${j.ms}ms` : ""
-      }.`;
-      setConnection({ ok: true, message: msg });
+      const usable: string[] = j.models || [];
+      setCatalogues((c) => ({
+        ...c,
+        [forProvider]: {
+          models: usable,
+          detail: j.detail || [],
+          hidden: j.hidden || 0,
+        },
+      }));
+      /*
+        Count what you can actually pick, and say plainly what was left out -
+        the raw catalogue is padded with embedding, reranking, OCR and speech
+        endpoints that 404 the moment you send them a message.
+      */
+      const msg =
+        `Connected - ${usable.length} chat models reachable` +
+        (j.hidden ? `, ${j.hidden} non-chat endpoints hidden` : "") +
+        (j.ms ? ` (${j.ms}ms)` : "") +
+        ".";
+      setConnections((c) => ({ ...c, [forProvider]: { ok: true, message: msg } }));
+      // if the selected model is not in the catalogue, move to the best one
+      // that is, rather than leaving a dead id in the box
+      if (usable.length && !usable.includes(providerModels[forProvider] ?? "")) {
+        setProviderModels((m) => ({ ...m, [forProvider]: usable[0] }));
+      }
       toast("success", msg);
     } catch (e: any) {
       if (req !== modelsReq.current) return;
-      setModels([]);
       const msg = String(e?.message || e);
-      setConnection({ ok: false, message: msg });
+      setConnections((c) => ({ ...c, [forProvider]: { ok: false, message: msg } }));
       toast("error", msg);
     } finally {
       if (req === modelsReq.current) setLoadingModels(false);
     }
-  }, [provider, baseUrl, apiKey, toast]);
+  }, [provider, baseUrl, apiKey, providerModels, toast]);
 
   const refreshMcpServer = useCallback(
     async (id: string) => {
@@ -745,7 +900,13 @@ export default function Page() {
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
-        let frame = 0;
+        /*
+          Flushing every other network frame meant a fast provider re-rendered
+          the transcript dozens of times a second. 60ms is still well inside
+          "instant" for a reader and cuts the React work by an order of
+          magnitude on a fast stream.
+        */
+        let lastFlush = 0;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -778,7 +939,11 @@ export default function Page() {
               /* skip malformed frame */
             }
           }
-          if (++frame % 2 === 0) flush();
+          const now = performance.now();
+          if (now - lastFlush >= 60) {
+            lastFlush = now;
+            flush();
+          }
         }
       } catch (e: any) {
         if (e?.name !== "AbortError") {
@@ -861,37 +1026,43 @@ export default function Page() {
     void run({ ...conv, messages: history }, history);
   }, [busy, input, attachments, conversation, newChat, patch, run]);
 
-  const retry = useCallback(
-    (index: number) => {
-      if (!conversation || busy) return;
-      const history = conversation.messages.slice(0, index);
-      patch(conversation.id, (c) => ({ ...c, messages: history }));
-      void run({ ...conversation, messages: history }, history);
-    },
-    [conversation, busy, patch, run]
-  );
+  /*
+    These are handed straight to a memoised ChatMessage, so their identity has
+    to survive a re-render or the memo never holds. Reading the moving parts
+    out of a ref keeps the callbacks themselves constant for the life of the
+    page, while still acting on current state.
+  */
+  const live = useRef({ conversation, busy, patch, run });
+  live.current = { conversation, busy, patch, run };
 
-  const edit = useCallback(
-    (index: number) => {
-      // Guard with retry/branch: truncating `messages` mid-stream deletes the
-      // in-flight assistant placeholder, so the reply streams into the void.
-      if (!conversation || busy) return;
-      const m = conversation.messages[index];
-      setInput(m.content);
-      setAttachments(m.attachments || []);
-      patch(conversation.id, (c) => ({
-        ...c,
-        messages: c.messages.slice(0, index),
-      }));
-    },
-    [conversation, busy, patch]
-  );
+  const retry = useCallback((index: number) => {
+    const { conversation, busy, patch, run } = live.current;
+    if (!conversation || busy) return;
+    const history = conversation.messages.slice(0, index);
+    patch(conversation.id, (c) => ({ ...c, messages: history }));
+    void run({ ...conversation, messages: history }, history);
+  }, []);
+
+  const edit = useCallback((index: number) => {
+    // Guard with retry/branch: truncating `messages` mid-stream deletes the
+    // in-flight assistant placeholder, so the reply streams into the void.
+    const { conversation, busy, patch } = live.current;
+    if (!conversation || busy) return;
+    const m = conversation.messages[index];
+    setInput(m.content);
+    setAttachments(m.attachments || []);
+    patch(conversation.id, (c) => ({
+      ...c,
+      messages: c.messages.slice(0, index),
+    }));
+  }, []);
 
   /** Copies the conversation up to this point into a new chat, leaving the
    *  original intact - so you can try a different direction without losing the
    *  one you already have. */
   const branch = useCallback(
     (index: number) => {
+      const { conversation } = live.current;
       if (!conversation) return;
       const c: Conversation = {
         id: uid("c"),
@@ -904,7 +1075,7 @@ export default function Page() {
       setCurrentId(c.id);
       toast("info", "Branched into a new chat. The original is untouched.");
     },
-    [conversation, toast]
+    [toast]
   );
 
   /** ArrowUp in an empty composer pulls back the last thing you sent. */
@@ -980,7 +1151,13 @@ export default function Page() {
           const c = data.cfg;
           const importedProvider = (c.provider || provider) as ProviderId;
           if (c.provider) setProvider(importedProvider);
-          if (c.model) setModel(c.model);
+          setProviderModels((current) => ({
+            ...current,
+            ...(c.providerModels || {}),
+            ...(typeof c.model === "string" && c.model
+              ? { [importedProvider]: c.model }
+              : {}),
+          }));
           setProviderEndpoints((current) => ({
             ...current,
             ...(c.providerEndpoints || {}),
@@ -1091,7 +1268,9 @@ export default function Page() {
   }, [input, currentId, ready]);
 
   useEffect(() => {
-    if (ready) store.trySet("drafts", drafts);
+    if (!ready) return;
+    const t = setTimeout(() => store.trySet("drafts", drafts), 600);
+    return () => clearTimeout(t);
   }, [ready, drafts]);
 
   const openChat = useCallback(
@@ -1137,6 +1316,12 @@ export default function Page() {
 
   /* ---------------- palette commands ---------------- */
   const paletteCommands: Command[] = useMemo(() => {
+    /*
+      This list embeds up to 25 conversations' full text as search keywords.
+      Building it on every render meant doing that work on every streamed
+      frame, for a panel that is almost always closed.
+    */
+    if (!paletteOpen) return [];
     const cmds: Command[] = [
       {
         id: "new",
@@ -1275,6 +1460,7 @@ export default function Page() {
 
     return cmds;
   }, [
+    paletteOpen,
     mod,
     newChat,
     panelOpen,
@@ -1292,6 +1478,67 @@ export default function Page() {
     conversations,
     conversation,
   ]);
+
+  /* ---------------- pickers ---------------- */
+  const providerOptions: ListboxOption[] = useMemo(
+    () =>
+      PROVIDER_ORDER.map((id) => ({
+        value: id,
+        label: PROVIDERS[id].label,
+        hint: PROVIDERS[id].blurb,
+        meta: serverKeys[id]
+          ? "server key"
+          : providerKeys[id]
+            ? "key set"
+            : PROVIDERS[id].needsKey
+              ? "needs key"
+              : undefined,
+      })),
+    [serverKeys, providerKeys]
+  );
+
+  /*
+    Built from the live catalogue when there is one, falling back to the hand
+    written hints. Non-chat endpoints are hidden unless you ask for them, and
+    the currently selected id is always present even if nothing lists it - a
+    picker that silently shows a different model than the one you are about to
+    send to is worse than an unfamiliar entry.
+  */
+  const modelOptions: ListboxOption[] = useMemo(() => {
+    const out: ListboxOption[] = [];
+    const seen = new Set<string>();
+    const add = (o: ListboxOption) => {
+      if (seen.has(o.value)) return;
+      seen.add(o.value);
+      out.push(o);
+    };
+
+    if (modelDetail.length) {
+      for (const m of modelDetail) {
+        if (!m.chat && !prefs.showAllModels) continue;
+        add({
+          value: m.id,
+          label: m.id,
+          hint: m.owned || undefined,
+          meta: m.context ? `${Math.round(m.context / 1000)}k` : undefined,
+          warn: m.chat ? undefined : "not a chat endpoint - it will not answer",
+          group: m.chat ? "Chat models" : "Other endpoints",
+        });
+      }
+    } else {
+      for (const id of models.length ? models : MODEL_HINTS[provider] || [])
+        add({ value: id, label: id });
+    }
+
+    if (model && !seen.has(model))
+      add({
+        value: model,
+        label: model,
+        hint: "set by hand - not in the loaded catalogue",
+        group: modelDetail.length ? "Chat models" : undefined,
+      });
+    return out;
+  }, [modelDetail, models, model, provider, prefs.showAllModels]);
 
   /* ---------------- render ---------------- */
   const providerSpec = PROVIDERS[provider];
@@ -1361,10 +1608,19 @@ export default function Page() {
               rememberKey={rememberKey}
               setRememberKey={setRememberKey}
               models={models}
+              modelOptions={modelOptions}
+              hiddenModels={hiddenModels}
               loadingModels={loadingModels}
               onLoadModels={loadModels}
               connection={connection}
               serverKeys={serverKeys}
+              providerKeys={providerKeys}
+              onResetEndpoint={() =>
+                setProviderEndpoints((c) => ({
+                  ...c,
+                  [provider]: PROVIDERS[provider].baseUrl,
+                }))
+              }
               params={params}
               setParams={setParams}
               enabledPlugins={enabledPlugins}
@@ -1416,10 +1672,10 @@ export default function Page() {
                 setConversations([]);
                 setCurrentId(null);
                 setMcpServers([]);
-                setApiKey("");
+                setProviderKeys(DEFAULT_PROVIDER_KEYS);
                 setRememberKey(false);
                 setProvider("nvidia");
-                setModel(PROVIDERS.nvidia.defaultModel);
+                setProviderModels(DEFAULT_PROVIDER_MODELS);
                 setProviderEndpoints(DEFAULT_PROVIDER_ENDPOINTS);
                 setParams(DEFAULT_PARAMS);
                 setEnabledPlugins(
@@ -1427,8 +1683,8 @@ export default function Page() {
                 );
                 setEnabledSkills(["ops-voice", "visual-out", "tool-use"]);
                 setPrefs(DEFAULT_PREFS);
-                setModels([]);
-                setConnection(null);
+                setCatalogues({});
+                setConnections({});
                 setDrafts({});
                 setInput("");
                 setAttachments([]);
@@ -1497,24 +1753,14 @@ export default function Page() {
                 : "Provider connection has not been checked"}
             </span>
 
-            <div className="relative flex-none">
-              <select
-                value={provider}
-                onChange={(e) => {
-                  const id = e.target.value as ProviderId;
-                  switchProvider(id);
-                }}
-                aria-label="Provider"
-                className="cursor-pointer appearance-none rounded bg-transparent py-1 pr-4 font-mono text-[11.5px] text-white/80 hover:text-white"
-              >
-                {PROVIDER_ORDER.map((id) => (
-                  <option key={id} value={id}>
-                    {PROVIDERS[id].label}
-                  </option>
-                ))}
-              </select>
-              <Chevron />
-            </div>
+            <Listbox
+              className="flex-none"
+              buttonClassName="font-mono hover:bg-white/[0.05]"
+              label="Provider"
+              value={provider}
+              options={providerOptions}
+              onChange={(id) => switchProvider(id as ProviderId)}
+            />
 
             <span className="hidden text-white/15 xs:inline">·</span>
 
@@ -1528,28 +1774,29 @@ export default function Page() {
                 className="hidden w-36 bg-transparent font-mono text-[11.5px] text-white/80 outline-none hover:text-white xs:block"
               />
             ) : (
-              <div className="relative hidden min-w-0 xs:block">
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  aria-label="Model"
-                  className="max-w-[10rem] cursor-pointer appearance-none truncate rounded bg-transparent py-1 pr-4 font-mono text-[11.5px] text-white/80 hover:text-white sm:max-w-[16rem]"
-                >
-                  {/* a hand-typed or migrated model that no list contains would
-                      otherwise render as its first option while state says
-                      otherwise - show the truth instead */}
-                  {(() => {
-                    const list = models.length ? models : MODEL_HINTS[provider] || [];
-                    const extra = list.includes(model) ? [] : [model];
-                    return [...extra, ...list].map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ));
-                  })()}
-                </select>
-                <Chevron />
-              </div>
+              <Listbox
+                className="hidden min-w-0 max-w-[10rem] xs:block sm:max-w-[18rem]"
+                buttonClassName="font-mono hover:bg-white/[0.05]"
+                label="Model"
+                value={model}
+                options={modelOptions}
+                onChange={setModel}
+                placeholder="Load models"
+                footer={
+                  hiddenModels ? (
+                    <button
+                      onClick={() =>
+                        setPrefs((pr) => ({ ...pr, showAllModels: !pr.showAllModels }))
+                      }
+                      className="w-full text-left text-[10.5px] text-white/40 hover:text-white/70"
+                    >
+                      {prefs.showAllModels
+                        ? `Hide ${hiddenModels} non-chat endpoints`
+                        : `Show ${hiddenModels} hidden non-chat endpoints`}
+                    </button>
+                  ) : null
+                }
+              />
             )}
 
             {contextTokens ? (
@@ -1636,10 +1883,11 @@ export default function Page() {
               <ChatMessage
                 key={m.id}
                 message={m}
+                index={i}
                 live={busy && i === messages.length - 1 && m.role === "assistant"}
-                onRetry={m.role === "assistant" && !busy ? () => retry(i) : undefined}
-                onEdit={m.role === "user" && !busy ? () => edit(i) : undefined}
-                onBranch={!busy ? () => branch(i) : undefined}
+                onRetry={m.role === "assistant" && !busy ? retry : undefined}
+                onEdit={m.role === "user" && !busy ? edit : undefined}
+                onBranch={!busy ? branch : undefined}
               />
             ))
           )}
@@ -1694,7 +1942,7 @@ export default function Page() {
 
         <AnimatePresence>
           {busy ? (
-            <ThinkingPill phase={phase || undefined} elapsed={elapsed} />
+            <ThinkingPill phase={phase || undefined} startedAt={startedAt} />
           ) : null}
         </AnimatePresence>
       </main>

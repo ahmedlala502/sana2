@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -18,23 +18,42 @@ import { cn, copyText, fmtMs } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
 import type { Message, ToolTrace } from "@/lib/types";
 
-export function ChatMessage({
+/*
+  Memoised, and deliberately taking `index` plus stable callbacks rather than
+  pre-bound closures. A streaming reply re-renders the transcript many times a
+  second; without this every message in the conversation re-rendered and
+  re-parsed its markdown on each one, so a long chat got slower the longer it
+  got.
+*/
+function ChatMessageImpl({
   message,
+  index,
   onRetry,
   onEdit,
   onBranch,
   live,
 }: {
   message: Message;
-  onRetry?: () => void;
-  onEdit?: () => void;
-  onBranch?: () => void;
+  index: number;
+  onRetry?: (index: number) => void;
+  onEdit?: (index: number) => void;
+  onBranch?: (index: number) => void;
   live?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [openReasoning, setOpenReasoning] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const isUser = message.role === "user";
+
+  /*
+    Parsing and highlighting is the expensive half of a render. Keyed on the
+    text alone, so the caret appearing or an action button showing does not
+    re-run it.
+  */
+  const html = useMemo(
+    () => (isUser ? "" : renderMarkdown(message.content)),
+    [isUser, message.content]
+  );
 
   const copy = async () => {
     const ok = await copyText(message.content);
@@ -203,9 +222,7 @@ export function ChatMessage({
             aria-live={!live ? "polite" : undefined}
             aria-busy={live || undefined}
             dangerouslySetInnerHTML={{
-              __html:
-                renderMarkdown(message.content) +
-                (live ? '<span class="caret" aria-hidden></span>' : ""),
+              __html: html + (live ? '<span class="caret" aria-hidden></span>' : ""),
             }}
           />
         )}
@@ -217,17 +234,17 @@ export function ChatMessage({
               {copied ? "Copied" : "Copy"}
             </RowAction>
             {!isUser && onRetry ? (
-              <RowAction onClick={onRetry} icon={RotateCcw}>
+              <RowAction onClick={() => onRetry(index)} icon={RotateCcw}>
                 Retry
               </RowAction>
             ) : null}
             {isUser && onEdit ? (
-              <RowAction onClick={onEdit} icon={Pencil}>
+              <RowAction onClick={() => onEdit(index)} icon={Pencil}>
                 Edit
               </RowAction>
             ) : null}
             {onBranch ? (
-              <RowAction onClick={onBranch} icon={GitBranch}>
+              <RowAction onClick={() => onBranch(index)} icon={GitBranch}>
                 Branch
               </RowAction>
             ) : null}
@@ -237,6 +254,8 @@ export function ChatMessage({
     </motion.div>
   );
 }
+
+export const ChatMessage = memo(ChatMessageImpl);
 
 function RowAction({
   onClick,
