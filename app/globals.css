@@ -851,3 +851,31 @@ select {
 .listbox-option[data-selected="true"] {
   color: rgb(var(--accent-vivid-rgb));
 }
+
+/* ------------------------------------------------------------------ *
+ * Skip link
+ *
+ * page.tsx has always rendered `.skip-link`, but no rule ever existed for it -
+ * confirmed against the last production build - so "Skip to conversation" sat
+ * visible in the top-left corner of the app. Off-screen until focused is what
+ * it was meant to be.
+ * ------------------------------------------------------------------ */
+.skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.5rem 0.9rem;
+  border-radius: calc(var(--radius) - 2px);
+  background: rgb(var(--canvas));
+  color: rgb(var(--tint));
+  border: 1px solid rgb(var(--accent-vivid-rgb) / 0.6);
+  font-size: 12.5px;
+  font-weight: 600;
+  /* clipped rather than display:none, so screen readers still reach it */
+  transform: translateY(-200%);
+  transition: transform 0.15s ease;
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
