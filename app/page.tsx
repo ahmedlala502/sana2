@@ -54,7 +54,12 @@ import { ToastStack } from "@/components/ui/toast";
 import { ChatMessage } from "@/components/chat-message";
 import { Sidebar, RAIL_DEFAULT } from "@/components/sidebar";
 
-import { PROVIDERS, PROVIDER_ORDER, MODEL_HINTS } from "@/lib/providers";
+import {
+  PROVIDERS,
+  PROVIDER_ORDER,
+  MODEL_HINTS,
+  RETIRED_MODELS,
+} from "@/lib/providers";
 import { Listbox, type ListboxOption } from "@/components/ui/listbox";
 import { PLUGINS, SKILLS, commandSkills, systemFragments } from "@/lib/registry";
 import { extractArtifacts } from "@/lib/markdown";
@@ -325,14 +330,21 @@ export default function Page() {
     if (cfg) {
       const restoredProvider = (cfg.provider ?? "nvidia") as ProviderId;
       setProvider(restoredProvider);
-      setProviderModels({
+      const restoredModels: Record<string, string> = {
         ...DEFAULT_PROVIDER_MODELS,
         ...(cfg.providerModels || {}),
         // migrate the former single model field onto the provider that owned it
         ...(typeof cfg.model === "string" && cfg.model
           ? { [restoredProvider]: cfg.model }
           : {}),
-      });
+      };
+      // a provider can withdraw a model; keeping the dead id only produces an
+      // upstream error on every send until someone changes it by hand
+      for (const [id, chosen] of Object.entries(restoredModels)) {
+        const replacement = RETIRED_MODELS[chosen];
+        if (replacement) restoredModels[id] = replacement;
+      }
+      setProviderModels(restoredModels as Record<ProviderId, string>);
       setProviderEndpoints({
         ...DEFAULT_PROVIDER_ENDPOINTS,
         ...(cfg.providerEndpoints || {}),

@@ -10,6 +10,11 @@ export interface ProviderSpec {
   defaultModel: string;
   /** Server-side env var consulted when the client sends no key. */
   envKey?: string;
+  /*
+    Serves some models without any credentials, but accepts a key to unlock
+    the rest. Distinct from needsKey, which gates whether we send at all.
+  */
+  freeTier?: boolean;
   docs: string;
   local?: boolean;
 }

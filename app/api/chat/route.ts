@@ -290,18 +290,32 @@ export async function POST(req: NextRequest) {
       let pass = 0;
 
       const runPass = async (isContinuation: boolean): Promise<boolean> => {
-        const r = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: { ...headers, Accept: "text/event-stream" },
-          timeoutMs: STREAM_TIMEOUT,
-          parentSignal: req.signal,
-          body: JSON.stringify({
-            ...base,
-            messages,
-            stream: true,
-            stream_options: { include_usage: true },
-          }),
-        });
+        /*
+          Free tiers return a transient 502/503 fairly regularly - the upstream
+          pool is briefly out of capacity, and the identical request succeeds a
+          second later. Retrying here is safe because nothing has been streamed
+          to the client yet, so there is no partial reply to duplicate.
+        */
+        let r: Response | undefined;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (closed || req.signal.aborted) return false;
+          r = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: { ...headers, Accept: "text/event-stream" },
+            timeoutMs: STREAM_TIMEOUT,
+            parentSignal: req.signal,
+            body: JSON.stringify({
+              ...base,
+              messages,
+              stream: true,
+              stream_options: { include_usage: true },
+            }),
+          });
+          if (r.ok || ![502, 503, 504].includes(r.status)) break;
+          if (attempt === 0) push({ type: "status", phase: "retrying" });
+          await new Promise((done) => setTimeout(done, 600 * (attempt + 1)));
+        }
+        if (!r) return false;
 
         if (!r.ok || !r.body) {
           const text = await r.text().catch(() => "");

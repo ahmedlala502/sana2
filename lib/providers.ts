@@ -26,11 +26,21 @@ export const PROVIDERS: Record<ProviderId, ProviderSpec> = {
   opencode: {
     id: "opencode",
     label: "OpenCode Zen",
-    blurb: "Coding-tuned gateway with a free tier.",
+    blurb:
+      "Coding-tuned gateway. The -free models answer with no key at all; the rest need one.",
     baseUrl: "https://opencode.ai/zen/v1",
-    needsKey: true,
-    keyPlaceholder: "your Zen key",
-    defaultModel: "deepseek-v4-flash-free",
+    /*
+      Zen serves its free tier unauthenticated - verified against the live API:
+      laguna-s-2.1-free and hy3-free both return 200 and stream with no
+      Authorization header, while a paid model returns 401. Marking this true
+      made the app refuse to send anything at all without a key, so the whole
+      provider looked dead to anyone who had not pasted one. A key is still
+      used when present, and is still required for the paid models.
+    */
+    needsKey: false,
+    freeTier: true,
+    keyPlaceholder: "optional - unlocks the paid models",
+    defaultModel: "laguna-s-2.1-free",
     envKey: "OPENCODE_API_KEY",
     docs: "https://opencode.ai/docs/zen/",
   },
@@ -61,11 +71,13 @@ export const MODEL_HINTS: Partial<Record<ProviderId, string[]>> = {
     "deepseek-ai/deepseek-coder-6.7b-instruct",
   ],
   ollama: ["llama3.2", "qwen2.5-coder", "mistral", "phi3"],
+  // ordered by what actually answered when probed without a key
   opencode: [
-    "deepseek-v4-flash-free",
-    "nemotron-3-ultra-free",
-    "mimo-v2.5-free",
     "laguna-s-2.1-free",
+    "hy3-free",
+    "mimo-v2.5-free",
+    "claude-sonnet-5",
+    "gpt-5.5",
   ],
 };
 
@@ -142,3 +154,18 @@ export function usableModels(ids: string[]): string[] {
     .filter(isChatModel)
     .sort((a, b) => modelRank(b) - modelRank(a) || a.localeCompare(b));
 }
+
+/*
+  Model ids that a provider has since withdrawn, and what to use instead.
+
+  A model id is saved per provider, so an installation that was set up when
+  one of these was current keeps sending it and gets an unhelpful upstream
+  error forever. deepseek-v4-flash-free was this app's OpenCode default and
+  now returns HTTP 400 "Model is unavailable"; nemotron-3-ultra-free stopped
+  responding altogether.
+*/
+export const RETIRED_MODELS: Record<string, string> = {
+  "deepseek-v4-flash-free": "laguna-s-2.1-free",
+  "nemotron-3-ultra-free": "hy3-free",
+  "nemotron-3.5-lightning-free": "hy3-free",
+};

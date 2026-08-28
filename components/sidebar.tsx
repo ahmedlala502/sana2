@@ -764,7 +764,13 @@ export function Sidebar(p: SidebarProps) {
               </div>
             </Section>
 
-            {spec.needsKey || p.provider === "custom" ? (
+            {/*
+              Shown whenever the provider can use a key at all - not only when
+              it demands one. OpenCode Zen answers its free models unauthenticated
+              but needs a key for the paid ones, and keying this off needsKey
+              alone hid the field exactly where it was still needed.
+            */}
+            {spec.needsKey || spec.freeTier || spec.envKey || p.provider === "custom" ? (
               <Section title="API key">
                 {p.serverKeys[p.provider] ? (
                   <p className="mb-2 flex items-start gap-1.5 rounded-lg border border-emerald-400/25 bg-emerald-400/[0.06] px-2.5 py-2 text-[11.5px] leading-relaxed text-emerald-300/90">
@@ -800,6 +806,12 @@ export function Sidebar(p: SidebarProps) {
                   </button>
                 </div>
                 <p className="mt-1.5 text-[10.5px] leading-relaxed text-white/30">
+                  {spec.freeTier ? (
+                    <>
+                      Optional. The <span className="font-mono">-free</span> models
+                      answer without a key; the rest need one.{" "}
+                    </>
+                  ) : null}
                   This key belongs to {spec.label} alone. Each provider keeps its
                   own, so switching never sends one provider&rsquo;s key to another.
                 </p>
